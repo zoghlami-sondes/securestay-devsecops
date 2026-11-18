@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - My Bookings{% endblock %}
+
+{% block content %}
+
+<section class="section">
+
+    <h1>My Bookings</h1>
+
+    {% if bookings %}
+
+        <div class="property-grid">
+
+            {% for booking in bookings %}
+
+                <article class="card">
+
+                    <h3>{{ booking[1] }}</h3>
+
+                    <p>{{ booking[2] }}</p>
+
+                    <p>€{{ booking[3] }} / night</p>
+
+                    <p>
+                        <strong>Status:</strong>
+                        {{ booking[4] }}
+                    </p>
+
+                    <p>
+                        <strong>Booking ID:</strong>
+                        {{ booking[0] }}
+                    </p>
+
+                </article>
+
+            {% endfor %}
+
+        </div>
+
+    {% else %}
+
+        <p>You don't have any bookings yet.</p>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

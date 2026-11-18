@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - New Message{% endblock %}
+
+{% block content %}
+
+<section class="form-section">
+
+    <h1>New Message</h1>
+
+    {% if error %}
+        <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <form
+        method="POST"
+        class="form"
+    >
+
+        <label for="recipient">
+            Recipient username
+        </label>
+
+        <input
+            type="text"
+            id="recipient"
+            name="recipient"
+            placeholder="e.g. bob"
+            required
+        >
+
+        <label for="content">
+            Message
+        </label>
+
+        <textarea
+            id="content"
+            name="content"
+            rows="8"
+            placeholder="Write your message..."
+            required
+        ></textarea>
+
+        <button type="submit">
+            Send message
+        </button>
+
+    </form>
+
+</section>
+
+{% endblock %}

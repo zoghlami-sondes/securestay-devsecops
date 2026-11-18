@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - Admin{% endblock %}
+
+{% block content %}
+
+<section class="section">
+
+    <div class="section-header">
+        <div>
+            <p class="location">Administration</p>
+            <h1>Admin Dashboard</h1>
+        </div>
+    </div>
+
+    <section class="admin-section">
+        <h2>Users</h2>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Role</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user[0] }}</td>
+                        <td>{{ user[1] }}</td>
+                        <td>{{ user[2] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+
+    <section class="admin-section">
+        <h2>Properties</h2>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Title</th>
+                        <th>Location</th>
+                        <th>Price</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for property in properties %}
+                    <tr>
+                        <td>{{ property[0] }}</td>
+                        <td>{{ property[1] }}</td>
+                        <td>{{ property[2] }}</td>
+                        <td>€{{ property[3] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+
+    <section class="admin-section">
+        <h2>Bookings</h2>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>User</th>
+                        <th>Property</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for booking in bookings %}
+                    <tr>
+                        <td>{{ booking[0] }}</td>
+                        <td>{{ booking[1] }}</td>
+                        <td>{{ booking[2] }}</td>
+                        <td>{{ booking[3] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+</section>
+
+<div class="completion-banner">
+    <div class="completion-icon">🎉</div>
+
+    <div>
+        <h2>Administrative Access Granted</h2>
+
+        <p>
+            Congratulations. You successfully obtained administrative access.
+        </p>
+
+        <code>SECURESTAY{PLEASE_HIRE_ME}</code>
+    </div>
+</div>
+
+{% endblock %}

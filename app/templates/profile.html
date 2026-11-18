@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - Profile{% endblock %}
+
+{% block content %}
+
+<section class="form-section">
+
+    <h1>My Profile</h1>
+
+    {% if user %}
+
+        <p><strong>User ID:</strong> {{ user[0] }}</p>
+        <p><strong>Username:</strong> {{ user[1] }}</p>
+        <p><strong>Role:</strong> {{ user[2] }}</p>
+        <p>
+            <strong>Password reset token:</strong>
+            {{ user[3] }}
+        </p>
+
+        <p>
+            <a href="{{ url_for('logout') }}">Logout</a>
+        </p>
+
+        <a href="/reset-password" class="button">
+            Reset Password
+        </a>
+
+    {% else %}
+
+        <p>User not found.</p>
+
+    {% endif %}
+        
+</section>
+
+{% endblock %}

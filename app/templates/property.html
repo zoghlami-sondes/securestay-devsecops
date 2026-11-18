@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - {{ property[1] }}{% endblock %}
+
+{% block content %}
+
+<section class="property-detail">
+
+    <div class="property-header">
+        <p class="location">{{ property[2] }}</p>
+
+        <h1>{{ property[1] }}</h1>
+
+        <p class="price">
+            €{{ property[4] }} / night
+        </p>
+    </div>
+
+    <div class="property-description">
+        <h2>About this property</h2>
+
+        <p>{{ property[3] }}</p>
+    </div>
+
+    <div class="property-actions">
+
+        <form
+            action="{{ url_for('book_property', property_id=property[0]) }}"
+            method="POST"
+        >
+            <button type="submit">
+                Reserve this property
+            </button>
+        </form>
+
+        <a
+            href="{{ url_for('download_file', file=property[6]) }}"
+            class="button"
+        >
+            Download brochure
+        </a>
+
+    </div>
+
+</section>
+
+{% endblock %}

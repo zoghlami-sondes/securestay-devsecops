@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - Messages{% endblock %}
+
+{% block content %}
+
+<section class="section">
+
+    <div class="section-header">
+        <h1>Messages</h1>
+
+        <a
+            href="{{ url_for('send_message') }}"
+            class="button"
+        >
+            New message
+        </a>
+    </div>
+
+    {% if messages %}
+
+        <div class="messages-list">
+
+            {% for message in messages %}
+
+                <article class="message-card">
+
+                    <p class="message-sender">
+                        From: <strong>{{ message[1] }}</strong>
+                    </p>
+
+                    <p class="message-content">
+                        {{ message[2] }}
+                    </p>
+
+                </article>
+
+            {% endfor %}
+
+        </div>
+
+    {% else %}
+
+        <p>You don't have any messages.</p>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

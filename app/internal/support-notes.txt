@@ -1,0 +1,9 @@
+SecureStay Internal Support Notes
+
+Environment: development
+
+Legacy support interface:
+/admin/support
+
+Support reference:
+SS-SUPPORT-2026

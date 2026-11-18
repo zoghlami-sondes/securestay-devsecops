@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}SecureStay - Search{% endblock %}
+
+{% block content %}
+
+<section class="section">
+
+    <h1>Search properties</h1>
+
+    <form
+        action="{{ url_for('search') }}"
+        method="GET"
+        class="search-filters"
+    >
+
+        <div class="filter-group">
+            <label for="location">Location</label>
+            <input
+                type="text"
+                id="location"
+                name="location"
+                value="{{ location }}"
+                placeholder="Madrid"
+            >
+        </div>
+
+        <div class="filter-row">
+
+            <div class="filter-group">
+                <label for="min_price">Min price</label>
+                <input
+                    type="number"
+                    id="min_price"
+                    name="min_price"
+                    value="{{ min_price or '' }}"
+                    min="0"
+                >
+            </div>
+
+            <div class="filter-group">
+                <label for="max_price">Max price</label>
+                <input
+                    type="number"
+                    id="max_price"
+                    name="max_price"
+                    value="{{ max_price or '' }}"
+                    min="0"
+                >
+            </div>
+
+            <div class="filter-group">
+                <label for="guests">Guests</label>
+                <input
+                    type="number"
+                    id="guests"
+                    name="guests"
+                    value="{{ guests or '' }}"
+                    min="1"
+                >
+            </div>
+
+        </div>
+
+        <button type="submit">
+            Search
+        </button>
+
+    </form>
+
+</section>
+
+
+<section class="section">
+
+    <h2>Results</h2>
+
+    {% if results %}
+
+        <div class="property-grid">
+
+            {% for property in results %}
+
+                <article class="card">
+
+                    <h3>
+                        <a href="{{ url_for(
+                            'property_details',
+                            property_id=property[0]
+                        ) }}">
+                            {{ property[1] }}
+                        </a>
+                    </h3>
+
+                    <p>{{ property[2] }}</p>
+                    <p>{{ property[3] }}</p>
+
+                    <strong>
+                        €{{ property[4] }} / night
+                    </strong>
+
+                    <p>
+                        Guests: {{ property[5] }}
+                    </p>
+
+                </article>
+
+            {% endfor %}
+
+        </div>
+
+    {% else %}
+
+        <p>No properties found.</p>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}
