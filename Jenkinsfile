@@ -36,6 +36,31 @@ pipeline {
                 '''
             }
         }
+
+        stage('Secret Scanning - Gitleaks') {
+            steps {
+                sh '''
+                    gitleaks git . \
+                      --redact=100 \
+                      --exit-code 0 \
+                      --report-format json \
+                      --report-path reports/gitleaks-initial.json \
+                      --no-banner
+                '''
+            }
+        }
+
+        stage('SCA - Trivy') {
+            steps {
+                sh '''
+                    trivy fs . \
+                      --scanners vuln \
+                      --format json \
+                      --output reports/trivy-sca-initial.json \
+                      --exit-code 0
+                '''
+            }
+        }
     }
 
     post {
@@ -45,3 +70,4 @@ pipeline {
         }
     }
 }
+
