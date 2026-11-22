@@ -12,16 +12,18 @@ pipeline {
         booleanParam(
             name: 'BUILD_IMAGE',
             defaultValue: false,
-            description: 'Activer après configuration du securestay-builder'
+            description: 'Activer apres configuration du securestay-builder'
         )
+
         booleanParam(
             name: 'ENFORCE_SECURITY_GATE',
             defaultValue: false,
-            description: 'Activer après validation des résultats initiaux'
+            description: 'Activer apres validation des resultats initiaux'
         )
     }
 
     stages {
+
         stage('Checkout GitHub') {
             steps {
                 checkout scm
@@ -31,6 +33,7 @@ pipeline {
         stage('Verify Source') {
             steps {
                 sh '''
+                    set -e
                     test -f Dockerfile
                     test -f app/requirements.txt
                     mkdir -p reports
@@ -198,6 +201,7 @@ PY
                     return params.ENFORCE_SECURITY_GATE
                 }
             }
+
             steps {
                 sh '''
                     python3 - <<'PY'
@@ -248,16 +252,22 @@ PY
         }
 
         stage('Docker Build + Trivy Image') {
+
             when {
+                beforeAgent true
+
                 expression {
                     return params.BUILD_IMAGE
                 }
             }
+
             agent {
                 label 'securestay-builder'
             }
+
             steps {
                 checkout scm
+
                 sh '''
                     set -eu
 
@@ -272,6 +282,7 @@ PY
                       --output reports/trivy-image.json \
                       securestay:${BUILD_NUMBER}
                 '''
+
                 archiveArtifacts(
                     artifacts: 'reports/trivy-image.json',
                     allowEmptyArchive: false
