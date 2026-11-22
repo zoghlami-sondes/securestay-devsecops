@@ -1,25 +1,27 @@
-from flask import Flask, request, render_template, session, redirect, url_for, send_from_directory, send_file
+from flask import Flask, request, render_template, session, redirect, url_for, abort, send_file
 from datetime import datetime
+from pathlib import Path
+
+import click
+import secrets
+
 from logging_config import setup_loggers
 from database import (
     init_db,
     search_properties,
     get_user_by_credentials,
     get_user_by_id,
-    get_user_profile,
     get_property_by_id,
     create_booking,
     get_bookings_for_user,
     create_message,
     get_messages_for_user,
     get_user_by_username,
-    create_booking,
     get_all_users,
     get_all_properties,
     get_all_bookings,
     update_password_with_token,
-    get_user_by_reset_token,
-    get_admin_reset_token
+    issue_reset_token
 )
 
 import os
@@ -31,18 +33,10 @@ FILES_DIRECTORY = os.path.join(
 
 app = Flask(__name__)
 
-ADMIN_PASSWORD = os.environ.get(
-    "ADMIN_PASSWORD",
-    "SecureStay-Admin-Internal-2026"
-)
-
-SUPPORT_CODE = os.environ.get(
-    "SUPPORT_CODE",
-    "SS-SUPPORT-2026"
-)
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or secrets.token_urlsafe(32)
 
 access_logger, auth_logger, app_logger = setup_loggers()
-app.secret_key = "dev-secret-key"
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 
 @app.route("/")
 def index():
@@ -92,16 +86,7 @@ def login():
             request.remote_addr
         )
 
-        if username == "admin":
-            if password == ADMIN_PASSWORD:
-                user = get_user_by_id(3)
-            else:
-                user = None
-        else:
-            user = get_user_by_credentials(
-                username,
-                password
-            )
+        user = get_user_by_credentials(username, password)
 
         if user:
             session["user_id"] = user[0]
@@ -136,19 +121,20 @@ def profile():
     if "user_id" not in session:
         return redirect(url_for("login"))
 
-    user = get_user_by_id(session["user_id"])
-
-    return render_template(
-        "profile.html",
-        user=user
-    )
+    return profile_by_id(session["user_id"])
 
 @app.route("/profile/<int:user_id>")
 def profile_by_id(user_id):
     if "user_id" not in session:
         return redirect(url_for("login"))
 
-    user = get_user_profile(user_id)
+    viewer = get_user_by_id(session["user_id"])
+    if viewer is None or (viewer[0] != user_id and viewer[2] != "admin"):
+        abort(403)
+
+    user = viewer if viewer[0] == user_id else get_user_by_id(user_id)
+    if user is None:
+        abort(404)
 
     return render_template(
         "profile.html",
@@ -295,24 +281,37 @@ def download_file():
         f"filename={filename}"
     )
 
-    file_path = os.path.join(FILES_DIRECTORY, filename)
+    root = Path(FILES_DIRECTORY).resolve()
+    if not filename or any(character in filename for character in ("\\", ":", "\0")):
+        abort(404)
+
+    requested = Path(filename)
+    if requested.is_absolute() or ".." in requested.parts:
+        abort(404)
+
+    try:
+        file_path = (root / requested).resolve()
+    except (OSError, RuntimeError, ValueError):
+        abort(404)
+
+    if not file_path.is_relative_to(root) or not file_path.is_file():
+        abort(404)
 
     return send_file(
         file_path,
         as_attachment=True
     )
 
-@app.route("/admin/support")
-def admin_support():
-    code = request.args.get("code", "")
+@app.cli.command("issue-reset-token")
+@click.argument("username")
+def issue_reset_token_command(username):
+    """Issue a password reset token for an existing account."""
+    token = issue_reset_token(username)
+    if token is None:
+        raise click.ClickException("User not found.")
 
-    if code != SUPPORT_CODE:
-        return "Forbidden", 403
+    click.echo(token)
 
-    return render_template(
-        "admin_support.html",
-        reset_token=get_admin_reset_token()
-    )
 
 @app.route("/admin")
 def admin_dashboard():
@@ -380,33 +379,21 @@ def log_request(response):
 
 @app.route("/reset-password", methods=["GET", "POST"])
 def reset_password():
-    global ADMIN_PASSWORD
-
     if request.method == "POST":
         reset_token = request.form.get("token", "")
         new_password = request.form.get("password", "")
 
-        user = get_user_by_reset_token(reset_token)
-
-        if not user:
+        if not new_password or not update_password_with_token(reset_token, new_password):
             return render_template(
                 "reset_password.html",
-                error="Invalid reset token."
-            )
-
-        if user[2] == "admin":
-            ADMIN_PASSWORD = new_password
-        else:
-            update_password_with_token(
-                reset_token,
-                new_password
-            )
+                error="Invalid or expired token, or missing new password."
+            ), 400
 
         return redirect(url_for("login"))
 
     return render_template("reset_password.html")
 
-init_db()
+init_db(ADMIN_PASSWORD)
 
 
 if __name__ == "__main__":

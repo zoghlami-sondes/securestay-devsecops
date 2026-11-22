@@ -1,128 +1,132 @@
+import hashlib
+import secrets
 import sqlite3
+from contextlib import closing
+
+from werkzeug.security import check_password_hash, generate_password_hash
 
 
 DATABASE = "lab.db"
+RESET_TOKEN_TTL = 30 * 60
 
 
 def get_connection():
     return sqlite3.connect(DATABASE)
 
 
-def init_db():
-    connection = get_connection()
-    cursor = connection.cursor()
+def init_db(admin_password):
+    with closing(get_connection()) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.cursor()
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL,
-            reset_token TEXT
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS properties (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            location TEXT NOT NULL,
-            description TEXT NOT NULL,
-            price REAL NOT NULL,
-            owner_id INTEGER,
-            brochure TEXT,
-            guests INTEGER NOT NULL,
-            FOREIGN KEY (owner_id) REFERENCES users(id)
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            property_id INTEGER NOT NULL,
-            status TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (property_id) REFERENCES properties(id)
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender_id INTEGER NOT NULL,
-            recipient_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            FOREIGN KEY (sender_id) REFERENCES users(id),
-            FOREIGN KEY (recipient_id) REFERENCES users(id)
-        )
-    """)
-
-    cursor.execute("""
-        INSERT OR IGNORE INTO users
-            (id, username, password, role, reset_token)
-        VALUES
-            (
-                1,
-                'alice',
-                'alice123',
-                'user',
-                'RST-ALICE-2026'
-            ),
-            (
-                2,
-                'bob',
-                'bob123',
-                'user',
-                'RST-BOB-2026'
-            ),
-            (
-                3,
-                'admin',
-                'ADMIN_EXTERNAL',
-                'admin',
-                'RST-ADMIN-2026-7f91'
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL,
+                reset_token TEXT
             )
-    """)
+        """)
 
-    cursor.execute("""
-        INSERT OR IGNORE INTO properties
-            (id, title, location, description, price, owner_id, brochure, guests)
-        VALUES
-            (
-                1,
-                'Madrid Central Apartment',
-                'Madrid, Spain',
-                'Modern apartment in central Madrid.',
-                120,
-                1,
-                'madrid-brochure.txt',
-                2
-            ),
-            (
-                2,
-                'Barcelona Beach House',
-                'Barcelona, Spain',
-                'Beach house with sea views.',
-                180,
-                2,
-                'barcelona-brochure.txt',
-                6
-            ),
-            (
-                3,
-                'Lisbon Studio',
-                'Lisbon, Portugal',
-                'Cozy studio in the city center.',
-                95,
-                2,
-                'lisbon-brochure.txt',
-                2
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS properties (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                location TEXT NOT NULL,
+                description TEXT NOT NULL,
+                price REAL NOT NULL,
+                owner_id INTEGER,
+                brochure TEXT,
+                guests INTEGER NOT NULL,
+                FOREIGN KEY (owner_id) REFERENCES users(id)
             )
-    """)
+        """)
 
-    connection.commit()
-    connection.close()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bookings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                property_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (property_id) REFERENCES properties(id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_id INTEGER NOT NULL,
+                recipient_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                FOREIGN KEY (sender_id) REFERENCES users(id),
+                FOREIGN KEY (recipient_id) REFERENCES users(id)
+            )
+        """)
+
+        columns = {column[1] for column in cursor.execute("PRAGMA table_info(users)")}
+        if "password_hashed" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_hashed INTEGER NOT NULL DEFAULT 0")
+        if "reset_token_expires_at" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN reset_token_expires_at INTEGER")
+            cursor.execute("UPDATE users SET reset_token = NULL")
+
+        cursor.executemany("""
+            INSERT OR IGNORE INTO users (id, username, password, role)
+            VALUES (?, ?, ?, ?)
+        """, [
+            (1, "alice", "alice123", "user"),
+            (2, "bob", "bob123", "user"),
+            (3, "admin", admin_password, "admin"),
+        ])
+
+        legacy_users = cursor.execute("""
+            SELECT id, username, password, role FROM users WHERE password_hashed = 0
+        """).fetchall()
+        for user_id, username, password, role in legacy_users:
+            if username == "admin" and role == "admin" and password == "ADMIN_EXTERNAL":
+                password = admin_password
+
+            cursor.execute("""
+                UPDATE users SET password = ?, password_hashed = 1 WHERE id = ?
+            """, (generate_password_hash(password), user_id))
+
+        cursor.execute("""
+            INSERT OR IGNORE INTO properties
+                (id, title, location, description, price, owner_id, brochure, guests)
+            VALUES
+                (
+                    1,
+                    'Madrid Central Apartment',
+                    'Madrid, Spain',
+                    'Modern apartment in central Madrid.',
+                    120,
+                    1,
+                    'madrid-brochure.txt',
+                    2
+                ),
+                (
+                    2,
+                    'Barcelona Beach House',
+                    'Barcelona, Spain',
+                    'Beach house with sea views.',
+                    180,
+                    2,
+                    'barcelona-brochure.txt',
+                    6
+                ),
+                (
+                    3,
+                    'Lisbon Studio',
+                    'Lisbon, Portugal',
+                    'Cozy studio in the city center.',
+                    95,
+                    2,
+                    'lisbon-brochure.txt',
+                    2
+                )
+        """)
 
 
 def search_properties(
@@ -140,28 +144,22 @@ def search_properties(
         WHERE 1=1
     """
 
+    parameters = []
+
     if location:
-        # Intentionally vulnerable for the lab.
-        sql += f" AND location LIKE '%{location}%'"
+        sql += " AND location LIKE ?"
+        parameters.append(f"%{location}%")
 
     if min_price is not None:
         sql += " AND price >= ?"
-
-    if max_price is not None:
-        sql += " AND price <= ?"
-
-    if guests is not None:
-        sql += " AND guests >= ?"
-
-    parameters = []
-
-    if min_price is not None:
         parameters.append(min_price)
 
     if max_price is not None:
+        sql += " AND price <= ?"
         parameters.append(max_price)
 
     if guests is not None:
+        sql += " AND guests >= ?"
         parameters.append(guests)
 
     cursor.execute(sql, parameters)
@@ -173,62 +171,25 @@ def search_properties(
     return results
 
 def get_user_by_credentials(username, password):
-    connection = get_connection()
-    cursor = connection.cursor()
+    with closing(get_connection()) as connection:
+        user = connection.execute(
+            "SELECT id, username, role, password FROM users WHERE username = ?",
+            (username,)
+        ).fetchone()
 
-    cursor.execute(
-        """
-        SELECT id, username, role
-        FROM users
-        WHERE username = ? AND password = ?
-        """,
-        (username, password)
-    )
+    if user and check_password_hash(user[3], password):
+        return user[:3]
 
-    user = cursor.fetchone()
-
-    connection.close()
-
-    return user
+    return None
 
 
 def get_user_by_id(user_id):
-    connection = get_connection()
-    cursor = connection.cursor()
+    with closing(get_connection()) as connection:
+        return connection.execute(
+            "SELECT id, username, role FROM users WHERE id = ?",
+            (user_id,)
+        ).fetchone()
 
-    cursor.execute(
-        """
-        SELECT id, username, role, reset_token
-        FROM users
-        WHERE id = ?
-        """,
-        (user_id,)
-    )
-
-    user = cursor.fetchone()
-
-    connection.close()
-
-    return user
-
-def get_user_profile(user_id):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT id, username, role, reset_token
-        FROM users
-        WHERE id = ?
-        """,
-        (user_id,)
-    )
-
-    user = cursor.fetchone()
-
-    connection.close()
-
-    return user
 
 def get_property_by_id(property_id):
     connection = get_connection()
@@ -414,58 +375,39 @@ def get_all_bookings():
 
     return bookings
 
+def issue_reset_token(username):
+    token = secrets.token_urlsafe(32)
+    token_digest = hashlib.sha256(token.encode()).hexdigest()
+    with closing(get_connection()) as connection, connection:
+        result = connection.execute("""
+            UPDATE users
+            SET reset_token = ?, reset_token_expires_at = unixepoch() + ?
+            WHERE username = ?
+        """, (token_digest, RESET_TOKEN_TTL, username))
+
+    return token if result.rowcount == 1 else None
+
+
 def update_password_with_token(reset_token, new_password):
-    connection = get_connection()
-    cursor = connection.cursor()
+    if not reset_token or not new_password:
+        return False
 
-    cursor.execute(
-        """
-        UPDATE users
-        SET password = ?
-        WHERE reset_token = ?
-        """,
-        (new_password, reset_token)
-    )
+    token_digest = hashlib.sha256(reset_token.encode()).hexdigest()
+    with closing(get_connection()) as connection, connection:
+        eligible_user = connection.execute("""
+            SELECT id FROM users
+            WHERE reset_token = ? AND reset_token_expires_at > unixepoch()
+        """, (token_digest,)).fetchone()
 
-    changed = cursor.rowcount
+        if eligible_user is None:
+            return False
 
-    connection.commit()
-    connection.close()
+        # Recheck the token in the write so concurrent requests can consume it only once.
+        result = connection.execute("""
+            UPDATE users
+            SET password = ?, password_hashed = 1,
+                reset_token = NULL, reset_token_expires_at = NULL
+            WHERE id = ? AND reset_token = ? AND reset_token_expires_at > unixepoch()
+        """, (generate_password_hash(new_password), eligible_user[0], token_digest))
 
-    return changed
-
-def get_user_by_reset_token(reset_token):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT id, username, role
-        FROM users
-        WHERE reset_token = ?
-        """,
-        (reset_token,)
-    )
-
-    user = cursor.fetchone()
-
-    connection.close()
-
-    return user
-
-def get_admin_reset_token():
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT reset_token
-        FROM users
-        WHERE role = 'admin'
-        LIMIT 1
-    """)
-
-    result = cursor.fetchone()
-
-    connection.close()
-
-    return result[0] if result else None
+    return result.rowcount == 1
