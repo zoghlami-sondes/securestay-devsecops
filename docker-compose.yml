@@ -2,8 +2,12 @@ services:
   web:
     build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./logs:/app/logs
+      - securestay-data:/app/data
     environment:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD non defini}
+
+volumes:
+  securestay-data:
