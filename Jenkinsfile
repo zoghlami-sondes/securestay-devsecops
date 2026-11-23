@@ -12,7 +12,13 @@ pipeline {
         booleanParam(
             name: 'BUILD_IMAGE',
             defaultValue: false,
-            description: 'Activer apres configuration du securestay-builder'
+            description: 'Activer apres validation du worker BuildKit SecureStay'
+        )
+
+        choice(
+            name: 'IMAGE_CRITICAL_POLICY',
+            choices: ['all', 'fixable', 'off'],
+            description: 'Blocage CRITICAL image lorsque le Security Gate est actif'
         )
 
         booleanParam(
@@ -37,6 +43,7 @@ pipeline {
                     test -f Dockerfile
                     test -f app/requirements.txt
                     mkdir -p reports
+                    rm -f reports/trivy-image.json reports/trivy-image-fixable.json
                     echo "SecureStay source verified"
                 '''
             }
@@ -195,6 +202,45 @@ PY
             }
         }
 
+        stage('Docker Build + Trivy Image') {
+            when {
+                expression { return params.BUILD_IMAGE }
+            }
+
+            steps {
+                sh '''
+                    set -eu
+                    builder=/home/jenkins/agent/.securestay-buildkit
+                    address="unix://$builder/buildkitd.sock"
+                    "$builder/buildctl" --addr "$address" debug workers
+
+                    work=$(mktemp -d)
+                    trap 'rm -rf "$work"' EXIT
+                    mkdir -p "$work/context" reports
+                    git archive --format=tar --output="$work/source.tar" HEAD
+                    tar -xf "$work/source.tar" -C "$work/context"
+
+                    "$builder/buildctl" --addr "$address" build \
+                      --frontend dockerfile.v0 \
+                      --local context="$work/context" \
+                      --local dockerfile="$work/context" \
+                      --output "type=docker,name=securestay:$BUILD_NUMBER,dest=$work/image.tar"
+
+                    trivy image \
+                      --input "$work/image.tar" \
+                      --scanners vuln \
+                      --severity HIGH,CRITICAL \
+                      --ignorefile /dev/null \
+                      --format json \
+                      --exit-code 0 \
+                      --output reports/trivy-image.json
+
+                    python3 ci/trivy_image_policy.py fixable \
+                      reports/trivy-image.json reports/trivy-image-fixable.json
+                '''
+            }
+        }
+
         stage('Security Gate') {
             when {
                 expression {
@@ -206,6 +252,8 @@ PY
                 sh '''
                     python3 - <<'PY'
 import json
+import os
+import subprocess
 from pathlib import Path
 
 root = Path("reports")
@@ -242,7 +290,15 @@ print(f"Semgrep ERROR: {errors}")
 print(f"Trivy HIGH/CRITICAL: {critical}")
 print(f"Gitleaks findings: {secrets}")
 
-if errors or critical or secrets:
+image_failed = False
+if os.environ.get("BUILD_IMAGE") == "true":
+    image_gate = subprocess.run([
+        "python3", "ci/trivy_image_policy.py", "gate",
+        "reports/trivy-image.json", "--critical", os.environ["IMAGE_CRITICAL_POLICY"]
+    ])
+    image_failed = image_gate.returncode != 0
+
+if errors or critical or secrets or image_failed:
     raise SystemExit("SECURITY GATE FAILED")
 
 print("SECURITY GATE PASSED")
@@ -251,44 +307,6 @@ PY
             }
         }
 
-        stage('Docker Build + Trivy Image') {
-
-            when {
-                beforeAgent true
-
-                expression {
-                    return params.BUILD_IMAGE
-                }
-            }
-
-            agent {
-                label 'securestay-builder'
-            }
-
-            steps {
-                checkout scm
-
-                sh '''
-                    set -eu
-
-                    docker build \
-                      -t securestay:${BUILD_NUMBER} .
-
-                    mkdir -p reports
-
-                    trivy image \
-                      --scanners vuln \
-                      --format json \
-                      --output reports/trivy-image.json \
-                      securestay:${BUILD_NUMBER}
-                '''
-
-                archiveArtifacts(
-                    artifacts: 'reports/trivy-image.json',
-                    allowEmptyArchive: false
-                )
-            }
-        }
     }
 
     post {

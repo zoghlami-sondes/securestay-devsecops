@@ -1,0 +1,24 @@
+services:
+  buildkit:
+    image: moby/buildkit:rootless@sha256:7d02292556e66feea6d2d89b7ec143503b57e4f59a4efc6b7ece8547e4d3e5be
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    command:
+      - --addr
+      - unix:///shared/buildkitd.sock
+      - --oci-worker-snapshotter=native
+    volumes:
+      - type: volume
+        source: agent_workspace
+        target: /shared
+        volume:
+          subpath: .securestay-buildkit
+          nocopy: true
+
+volumes:
+  agent_workspace:
+    external: true
+    name: jenkins-devsecops_agent_workspace
