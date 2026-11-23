@@ -1,0 +1,12 @@
+# N'envoyer au build que le code, les ressources publiques et les tests.
+# Git, fichiers .env, bases SQLite, sauvegardes, rapports, journaux et
+# fichiers privés comme app/internal/ restent hors du contexte.
+**
+!app/app.py
+!app/database.py
+!app/logging_config.py
+!app/requirements.txt
+!app/files/*-brochure.txt
+!app/static/style.css
+!app/templates/*.html
+!app/tests/test_security.py
