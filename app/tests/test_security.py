@@ -68,6 +68,34 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(database.search_properties(location="'"), [])
         self.assertEqual(database.search_properties(location="Location with ' and ?"), [])
 
+    def test_search_rejects_invalid_price_bounds(self):
+        invalid_prices = (
+            "NaN", "nAn", "sNaN", "Infinity", "-Infinity", "+inf",
+            "not-a-number", "12.3.4", " ", "1e9999", "-1e9999",
+        )
+        for field in ("min_price", "max_price"):
+            for value in invalid_prices:
+                with self.subTest(field=field, value=value):
+                    response = self.client.get("/search", query_string={field: value})
+                    self.assertEqual(response.status_code, 400)
+
+    def test_search_filters_with_decimal_price_bounds(self):
+        response = self.client.get("/search", query_string={
+            "min_price": "95.01", "max_price": "179.99",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Madrid Central Apartment", response.data)
+        self.assertNotIn(b"Lisbon Studio", response.data)
+        self.assertNotIn(b"Barcelona Beach House", response.data)
+
+    def test_search_treats_empty_price_bounds_as_unset(self):
+        response = self.client.get("/search", query_string={
+            "min_price": "", "max_price": "",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Lisbon Studio", response.data)
+        self.assertIn(b"Barcelona Beach House", response.data)
+
     def test_download_is_confined_to_brochure_directory(self):
         response = self.client.get("/download", query_string={"file": "madrid-brochure.txt"})
         try:

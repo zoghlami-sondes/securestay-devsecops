@@ -1,5 +1,7 @@
 from flask import Flask, request, render_template, session, redirect, url_for, abort, send_file
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from math import isfinite
 from pathlib import Path
 
 import click
@@ -43,6 +45,22 @@ def index():
     return render_template("index.html")
 
 
+def parse_optional_price(raw_price):
+    if raw_price is None or raw_price == "":
+        return None
+
+    price = Decimal(raw_price)
+    if not price.is_finite():
+        raise ValueError("Price must be finite")
+
+    # SQLite binds REAL values as floats, which have a smaller range than Decimal.
+    sqlite_price = float(price)
+    if not isfinite(sqlite_price):
+        raise ValueError("Price exceeds SQLite's numeric range")
+
+    return sqlite_price
+
+
 @app.route("/search")
 def search():
     location = request.args.get("location", "")
@@ -52,10 +70,10 @@ def search():
     guests_raw = request.args.get("guests")
 
     try:
-        min_price = float(min_price_raw) if min_price_raw else None
-        max_price = float(max_price_raw) if max_price_raw else None
+        min_price = parse_optional_price(min_price_raw)
+        max_price = parse_optional_price(max_price_raw)
         guests = int(guests_raw) if guests_raw else None
-    except ValueError:
+    except (InvalidOperation, ValueError):
         return "Invalid search parameters", 400
 
     results = search_properties(
