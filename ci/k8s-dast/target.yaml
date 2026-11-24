@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: securestay
+  namespace: securestay-dast
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: securestay-dast
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: securestay-dast
+    spec:
+      serviceAccountName: securestay-dast
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: fixture
+          image: securestay:k8s-local
+          imagePullPolicy: Never
+          workingDir: /app/data
+          command: ["python", "-c"]
+          args:
+            - |
+              import os
+              import sys
+              from contextlib import closing
+              from werkzeug.security import generate_password_hash
+              sys.path.insert(0, "/app")
+              from database import get_connection, init_db
+              init_db(os.environ["DAST_ADMIN_PASSWORD"])
+              with closing(get_connection()) as conn, conn:
+                  conn.execute("UPDATE users SET password = ? WHERE username = ?", (generate_password_hash(os.environ["DAST_PASSWORD"]), "alice"))
+          env:
+            - name: DAST_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: securestay-dast-fixture, key: admin-password}
+            - name: DAST_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: securestay-dast-fixture, key: password}
+          securityContext: &containerSecurity
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: sqlite, mountPath: /app/data}
+      containers:
+        - name: flask
+          image: securestay:k8s-local
+          imagePullPolicy: Never
+          workingDir: /app/data
+          command: ["python", "/app/app.py"]
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: securestay-dast-fixture, key: flask-key}
+          securityContext: *containerSecurity
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 3
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 15
+          volumeMounts:
+            - {name: sqlite, mountPath: /app/data}
+            - {name: logs, mountPath: /app/logs}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: sqlite, emptyDir: {sizeLimit: 128Mi}}
+        - {name: logs, emptyDir: {sizeLimit: 128Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: securestay
+  namespace: securestay-dast
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: securestay-dast
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: securestay-dast
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-client-egress
+  namespace: securestay-dast
+spec:
+  podSelector:
+    matchLabels:
+      securestay.io/test-egress: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: securestay-dast
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-test-ingress
+  namespace: securestay-dast
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: securestay-dast
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              securestay.io/test-ingress: "true"
+      ports: [{protocol: TCP, port: 8080}]

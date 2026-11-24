@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: securestay-dast-psa-rejection
+  namespace: securestay-dast
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: test
+      image: securestay:k8s-local
+      imagePullPolicy: Never
+      securityContext:
+        allowPrivilegeEscalation: true
+        capabilities: {drop: ["ALL"]}

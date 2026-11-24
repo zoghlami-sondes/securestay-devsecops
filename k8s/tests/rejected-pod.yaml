@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: securestay-psa-rejection
+  namespace: securestay
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: restricted-violation
+      image: securestay:k8s-local
+      imagePullPolicy: Never
+      securityContext:
+        allowPrivilegeEscalation: true
+        capabilities:
+          drop: ["ALL"]

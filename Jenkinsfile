@@ -22,6 +22,18 @@ pipeline {
         )
 
         booleanParam(
+            name: 'DEPLOY_DAST',
+            defaultValue: false,
+            description: 'Importer et verifier uniquement dans securestay-dast apres le gate'
+        )
+
+        string(
+            name: 'ZAP_IMAGE',
+            defaultValue: '',
+            description: 'Image ZAP approuvee, referencee par digest'
+        )
+
+        booleanParam(
             name: 'ENFORCE_SECURITY_GATE',
             defaultValue: false,
             description: 'Activer apres validation des resultats initiaux'
@@ -38,12 +50,22 @@ pipeline {
 
         stage('Verify Source') {
             steps {
+                script {
+                    if (params.DEPLOY_DAST && (!params.BUILD_IMAGE || !params.ENFORCE_SECURITY_GATE ||
+                                               params.IMAGE_CRITICAL_POLICY != 'all')) {
+                        error('DEPLOY_DAST requires BUILD_IMAGE, ENFORCE_SECURITY_GATE and IMAGE_CRITICAL_POLICY=all.')
+                    }
+                    if (params.DEPLOY_DAST &&
+                        !(params.ZAP_IMAGE ==~ /docker[.]io\/zaproxy\/zap-stable@sha256:[0-9a-f]{64}/)) {
+                        error('DEPLOY_DAST requires an approved ZAP image digest.')
+                    }
+                }
                 sh '''
                     set -e
                     test -f Dockerfile
                     test -f app/requirements.txt
                     mkdir -p reports
-                    rm -f reports/trivy-image.json reports/trivy-image-fixable.json
+                    rm -f reports/trivy-image.json reports/trivy-image-fixable.json reports/zap-passive.json reports/zap-passive.html
                     echo "SecureStay source verified"
                 '''
             }
@@ -208,6 +230,11 @@ PY
             }
 
             steps {
+                script {
+                    if (params.DEPLOY_DAST) {
+                        env.SECURESTAY_OCI = pwd(tmp: true) + "/securestay-${env.BUILD_NUMBER}.oci.tar"
+                    }
+                }
                 sh '''
                     set -eu
                     builder=/home/jenkins/agent/.securestay-buildkit
@@ -220,14 +247,28 @@ PY
                     git archive --format=tar --output="$work/source.tar" HEAD
                     tar -xf "$work/source.tar" -C "$work/context"
 
+                    if [ -n "${SECURESTAY_OCI:-}" ]; then
+                        mkdir -p "$(dirname "$SECURESTAY_OCI")" "$work/oci"
+                        rm -f -- "$SECURESTAY_OCI"
+                        set -- --opt platform=linux/amd64 --output "type=oci,name=docker.io/library/securestay:ci-$BUILD_NUMBER,dest=$SECURESTAY_OCI"
+                        scan_input="$work/oci"
+                    else
+                        set -- --output "type=docker,name=securestay:$BUILD_NUMBER,dest=$work/image.tar"
+                        scan_input="$work/image.tar"
+                    fi
+
                     "$builder/buildctl" --addr "$address" build \
                       --frontend dockerfile.v0 \
                       --local context="$work/context" \
                       --local dockerfile="$work/context" \
-                      --output "type=docker,name=securestay:$BUILD_NUMBER,dest=$work/image.tar"
+                      "$@"
 
+                    if [ -n "${SECURESTAY_OCI:-}" ]; then
+                        archive_sha=$(sha256sum "$SECURESTAY_OCI")
+                        tar -xf "$SECURESTAY_OCI" -C "$scan_input"
+                    fi
                     trivy image \
-                      --input "$work/image.tar" \
+                      --input "$scan_input" \
                       --scanners vuln \
                       --severity HIGH,CRITICAL \
                       --ignorefile /dev/null \
@@ -237,6 +278,12 @@ PY
 
                     python3 ci/trivy_image_policy.py fixable \
                       reports/trivy-image.json reports/trivy-image-fixable.json
+
+                    if [ -n "${SECURESTAY_OCI:-}" ]; then
+                        python3 ci/k8s-dast/release.py "$scan_input" "$SECURESTAY_OCI" \
+                          "${archive_sha%% *}" reports/trivy-image.json "$(git rev-parse HEAD)" \
+                          "$SECURESTAY_OCI.json"
+                    fi
                 '''
             }
         }
@@ -304,12 +351,113 @@ if errors or critical or secrets or image_failed:
 print("SECURITY GATE PASSED")
 PY
                 '''
+                script {
+                    env.SECURESTAY_GATE_PASSED = 'true'
+                }
             }
         }
 
+        stage('Authorize local OCI delivery') {
+            when { expression { return params.DEPLOY_DAST } }
+            steps {
+                timeout(time: 45, unit: 'MINUTES') {
+                    script {
+                        if (env.SECURESTAY_GATE_PASSED != 'true' ||
+                            !env.SECURESTAY_IMPORT_APPROVERS?.trim()) {
+                            error('A successful gate and a configured import approver are required.')
+                        }
+                        input message: 'Autoriser la mise a disposition de l’archive OCI controlee ?',
+                              ok: 'Autoriser la livraison',
+                              submitter: env.SECURESTAY_IMPORT_APPROVERS
+                        env.SECURESTAY_DELIVERY_APPROVED = 'true'
+                    }
+                }
+            }
+        }
+
+        stage('Archive gated OCI image') {
+            when { expression { return params.DEPLOY_DAST } }
+            steps {
+                script {
+                    if (env.SECURESTAY_GATE_PASSED != 'true' || env.SECURESTAY_DELIVERY_APPROVED != 'true' ||
+                        !env.SECURESTAY_IMPORT_APPROVERS?.trim()) {
+                        error('A successful gate and a configured import approver are required.')
+                    }
+                }
+                sh '''
+                    set -eu
+                    mkdir -p release
+                    cp -- "$SECURESTAY_OCI" release/securestay.oci.tar
+                    cp -- "$SECURESTAY_OCI.json" release/release.json
+                    python3 -c 'import json; import sys; print(json.load(sys.stdin)["archive_sha256"] + "  release/securestay.oci.tar")' \
+                      < release/release.json | sha256sum --check
+                '''
+                archiveArtifacts artifacts: 'release/securestay.oci.tar,release/release.json',
+                                 fingerprint: true
+            }
+        }
+
+        stage('Approve local kind import') {
+            when { expression { return params.DEPLOY_DAST } }
+            steps {
+                timeout(time: 45, unit: 'MINUTES') {
+                    script {
+                        if (env.SECURESTAY_GATE_PASSED != 'true' || env.SECURESTAY_DELIVERY_APPROVED != 'true' ||
+                            !env.SECURESTAY_IMPORT_APPROVERS?.trim()) {
+                            error('This build has no gated archive or import approver.')
+                        }
+                        def imported = input(
+                            message: "Importer l'archive de CE build depuis ${env.BUILD_URL}artifact/release/ et confirmer le digest vérifié.",
+                            ok: 'Confirmer l’import',
+                            submitter: env.SECURESTAY_IMPORT_APPROVERS,
+                            submitterParameter: 'IMPORT_OPERATOR',
+                            parameters: [string(name: 'IMPORTED_DIGEST', defaultValue: '',
+                                                description: 'Digest du manifeste vérifié par le script Windows')]
+                        )
+                        withEnv(["APPROVED_DIGEST=${imported.IMPORTED_DIGEST}"]) {
+                            sh '''
+                                set +x
+                                set -eu
+                                python3 -c 'import json, os, sys; sys.exit(json.load(sys.stdin)["manifest_digest"] != os.environ["APPROVED_DIGEST"])' < release/release.json
+                            '''
+                        }
+                        env.SECURESTAY_IMPORT_CONFIRMED = 'true'
+                        env.SECURESTAY_IMPORT_OPERATOR = imported.IMPORT_OPERATOR
+                    }
+                }
+            }
+        }
+
+        stage('Deploy and verify isolated SecureStay') {
+            when { expression { return params.DEPLOY_DAST } }
+            steps {
+                timeout(time: 25, unit: 'MINUTES') {
+                    script {
+                        if (env.SECURESTAY_GATE_PASSED != 'true' || env.SECURESTAY_DELIVERY_APPROVED != 'true' ||
+                            env.SECURESTAY_IMPORT_CONFIRMED != 'true') {
+                            error('This build has no verified local import.')
+                        }
+                    }
+                    withEnv(['PATH+SECURESTAY=/home/jenkins/agent/.securestay-tools']) {
+                        withCredentials([file(credentialsId: 'securestay-dast-kubeconfig',
+                                              variable: 'KUBECONFIG')]) {
+                            sh '''
+                                set +x
+                                set -eu
+                                command -v kubectl >/dev/null
+                                python3 ci/k8s-dast/run.py release/release.json
+                            '''
+                        }
+                    }
+                }
+            }
+        }
     }
 
     post {
+        cleanup {
+            sh 'if [ -n "${SECURESTAY_OCI:-}" ]; then rm -f -- "$SECURESTAY_OCI" "$SECURESTAY_OCI.json" release/securestay.oci.tar release/release.json; fi'
+        }
         always {
             archiveArtifacts(
                 artifacts: 'reports/*.json,reports/*.html',
