@@ -1,5 +1,4 @@
 from flask import Flask, request, render_template, session, redirect, url_for, abort, send_file
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
@@ -7,7 +6,7 @@ from pathlib import Path
 import click
 import secrets
 
-from logging_config import setup_loggers
+from logging_config import correlation_id, log_event, setup_loggers, start_request
 from database import (
     init_db,
     search_properties,
@@ -33,7 +32,13 @@ FILES_DIRECTORY = os.path.join(
     "files"
 )
 
-app = Flask(__name__)
+class SecureStayApp(Flask):
+    def log_exception(self, exc_info):
+        # Exception messages and the default Flask request path may contain raw input.
+        log_event(app_logger, "INTERNAL_ERROR", status=500)
+
+
+app = SecureStayApp(__name__)
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or secrets.token_urlsafe(32)
 
@@ -45,13 +50,18 @@ def index():
     return render_template("index.html")
 
 
+class NonFinitePrice(ValueError):
+    pass
+
+
 def parse_optional_price(raw_price):
     if raw_price is None or raw_price == "":
         return None
 
     price = Decimal(raw_price)
     if not price.is_finite():
-        raise ValueError("Price must be finite")
+        event = "PRICE_NAN_REJECTED" if price.is_nan() else "PRICE_NONFINITE_REJECTED"
+        raise NonFinitePrice(event)
 
     # SQLite binds REAL values as floats, which have a smaller range than Decimal.
     sqlite_price = float(price)
@@ -73,6 +83,9 @@ def search():
         min_price = parse_optional_price(min_price_raw)
         max_price = parse_optional_price(max_price_raw)
         guests = int(guests_raw) if guests_raw else None
+    except NonFinitePrice as error:
+        log_event(app_logger, error.args[0], status=400, count=True)
+        return "Invalid search parameters", 400
     except (InvalidOperation, ValueError):
         return "Invalid search parameters", 400
 
@@ -99,11 +112,6 @@ def login():
         username = request.form.get("username", "")
         password = request.form.get("password", "")
 
-        source_ip = request.headers.get(
-            "X-Lab-Source-IP",
-            request.remote_addr
-        )
-
         user = get_user_by_credentials(username, password)
 
         if user:
@@ -111,21 +119,11 @@ def login():
             session["username"] = user[1]
             session["role"] = user[2]
 
-            auth_logger.info(
-                f"{datetime.utcnow().isoformat()} "
-                f"source_ip={source_ip} "
-                f"event=LOGIN_SUCCESS "
-                f"username={username}"
-            )
+            log_event(auth_logger, "LOGIN_SUCCESS")
 
             return redirect(url_for("profile"))
 
-        auth_logger.info(
-            f"{datetime.utcnow().isoformat()} "
-            f"source_ip={source_ip} "
-            f"event=LOGIN_FAILURE "
-            f"username={username}"
-        )
+        log_event(auth_logger, "LOGIN_FAILURE", count=True)
 
         return render_template(
             "login.html",
@@ -148,6 +146,7 @@ def profile_by_id(user_id):
 
     viewer = get_user_by_id(session["user_id"])
     if viewer is None or (viewer[0] != user_id and viewer[2] != "admin"):
+        log_event(auth_logger, "PROFILE_ACCESS_DENIED", status=403, count=True)
         abort(403)
 
     user = viewer if viewer[0] == user_id else get_user_by_id(user_id)
@@ -161,19 +160,7 @@ def profile_by_id(user_id):
 
 @app.route("/logout")
 def logout():
-    source_ip = request.headers.get(
-        "X-Lab-Source-IP",
-        request.remote_addr
-    )
-
-    username = session.get("username", "unknown")
-
-    auth_logger.info(
-        f"{datetime.utcnow().isoformat()} "
-        f"source_ip={source_ip} "
-        f"event=LOGOUT "
-        f"username={username}"
-    )
+    log_event(auth_logger, "LOGOUT")
 
     session.clear()
 
@@ -201,19 +188,12 @@ def book_property(property_id):
     if not property_data:
         return "Property not found", 404
 
-    booking_id = create_booking(
+    create_booking(
         session["user_id"],
         property_id
     )
 
-    app_logger.info(
-        f"{datetime.utcnow().isoformat()} "
-        f"source_ip={request.headers.get('X-Lab-Source-IP', request.remote_addr)} "
-        f"event=BOOKING_CREATED "
-        f"user_id={session['user_id']} "
-        f"property_id={property_id} "
-        f"booking_id={booking_id}"
-    )
+    log_event(app_logger, "BOOKING_CREATED")
 
     return redirect(url_for("bookings"))
 
@@ -276,13 +256,7 @@ def send_message():
             content
         )
 
-        app_logger.info(
-            f"{datetime.utcnow().isoformat()} "
-            f"source_ip={request.headers.get('X-Lab-Source-IP', request.remote_addr)} "
-            f"event=MESSAGE_SENT "
-            f"sender_id={session['user_id']} "
-            f"recipient_id={recipient[0]}"
-        )
+        log_event(app_logger, "MESSAGE_SENT")
 
         return redirect(url_for("messages"))
 
@@ -292,12 +266,7 @@ def send_message():
 def download_file():
     filename = request.args.get("file", "")
 
-    app_logger.info(
-        f"{datetime.utcnow().isoformat()} "
-        f"source_ip={request.headers.get('X-Lab-Source-IP', request.remote_addr)} "
-        f"event=FILE_DOWNLOAD "
-        f"filename={filename}"
-    )
+    log_event(app_logger, "FILE_DOWNLOAD")
 
     root = Path(FILES_DIRECTORY).resolve()
     if not filename or any(character in filename for character in ("\\", ":", "\0")):
@@ -333,36 +302,17 @@ def issue_reset_token_command(username):
 
 @app.route("/admin")
 def admin_dashboard():
-    source_ip = request.headers.get(
-        "X-Lab-Source-IP",
-        request.remote_addr
-    )
-
     if "user_id" not in session:
-        app_logger.info(
-            f"{datetime.utcnow().isoformat()} "
-            f"source_ip={source_ip} "
-            f"event=ADMIN_ACCESS_UNAUTHENTICATED"
-        )
+        log_event(app_logger, "ADMIN_ACCESS_UNAUTHENTICATED", status=302)
 
         return redirect(url_for("login"))
 
     if session.get("role") != "admin":
-        app_logger.info(
-            f"{datetime.utcnow().isoformat()} "
-            f"source_ip={source_ip} "
-            f"event=ADMIN_ACCESS_DENIED "
-            f"user_id={session['user_id']}"
-        )
+        log_event(app_logger, "ADMIN_ACCESS_DENIED", status=403, count=True)
 
         return "Forbidden", 403
 
-    app_logger.info(
-        f"{datetime.utcnow().isoformat()} "
-        f"source_ip={source_ip} "
-        f"event=ADMIN_ACCESS_GRANTED "
-        f"user_id={session['user_id']}"
-    )
+    log_event(app_logger, "ADMIN_ACCESS_GRANTED")
 
     users = get_all_users()
     properties = get_all_properties()
@@ -375,25 +325,15 @@ def admin_dashboard():
         bookings=bookings
     )
 
+app.before_request(start_request)
+
+
 @app.after_request
 def log_request(response):
-    source_ip = request.headers.get(
-        "X-Lab-Source-IP",
-        request.remote_addr
-    )
-
-    timestamp = datetime.utcnow().isoformat()
-
-    access_logger.info(
-        f"{timestamp} "
-        f"source_ip={source_ip} "
-        f'method="{request.method}" '
-        f'path="{request.full_path.rstrip("?")}" '
-        f"status={response.status_code} "
-        f"bytes={response.calculate_content_length() or 0}"
-    )
-
+    response.headers["X-Correlation-ID"] = correlation_id()
+    log_event(access_logger, "HTTP_REQUEST", status=response.status_code)
     return response
+
 
 @app.route("/reset-password", methods=["GET", "POST"])
 def reset_password():

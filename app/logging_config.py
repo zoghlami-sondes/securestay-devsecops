@@ -1,53 +1,64 @@
+import json
 import logging
 import os
+from collections import Counter
+from datetime import datetime, timezone
+from threading import Lock
+from uuid import uuid4
+
+from flask import g, request
 
 
-LOG_DIRECTORY = os.path.join(
-    os.path.dirname(__file__),
-    "logs"
-)
+LOG_DIRECTORY = os.path.join(os.path.dirname(__file__), "logs")
+METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"}
+security_counts = Counter()
+counter_lock = Lock()
 
 
 def setup_loggers():
     os.makedirs(LOG_DIRECTORY, exist_ok=True)
 
-    access_logger = logging.getLogger("securestay.access")
-    auth_logger = logging.getLogger("securestay.auth")
-    app_logger = logging.getLogger("securestay.app")
+    # Werkzeug's access log includes the original request target and query string.
+    logging.getLogger("werkzeug").disabled = True
+    loggers = []
+    for name in ("access", "auth", "app"):
+        logger = logging.getLogger(f"securestay.{name}")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        if not logger.handlers:
+            handler = logging.FileHandler(os.path.join(LOG_DIRECTORY, f"{name}.log"), encoding="utf-8")
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            logger.addHandler(handler)
+        loggers.append(logger)
+    return tuple(loggers)
 
-    access_logger.setLevel(logging.INFO)
-    auth_logger.setLevel(logging.INFO)
-    app_logger.setLevel(logging.INFO)
 
-    access_logger.propagate = False
-    auth_logger.propagate = False
-    app_logger.propagate = False
+def start_request():
+    g.correlation_id = uuid4().hex
 
-    if not access_logger.handlers:
-        access_handler = logging.FileHandler(
-            os.path.join(LOG_DIRECTORY, "access.log")
-        )
-        access_handler.setFormatter(
-            logging.Formatter("%(message)s")
-        )
-        access_logger.addHandler(access_handler)
 
-    if not auth_logger.handlers:
-        auth_handler = logging.FileHandler(
-            os.path.join(LOG_DIRECTORY, "auth.log")
-        )
-        auth_handler.setFormatter(
-            logging.Formatter("%(message)s")
-        )
-        auth_logger.addHandler(auth_handler)
+def correlation_id():
+    if "correlation_id" not in g:
+        start_request()
+    return g.correlation_id
 
-    if not app_logger.handlers:
-        app_handler = logging.FileHandler(
-            os.path.join(LOG_DIRECTORY, "app.log")
-        )
-        app_handler.setFormatter(
-            logging.Formatter("%(message)s")
-        )
-        app_logger.addHandler(app_handler)
 
-    return access_logger, auth_logger, app_logger
+def log_event(logger, event, *, status=None, count=False):
+    """Emit only route metadata and application-defined event codes."""
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "correlation_id": correlation_id(),
+        "event": event,
+        "method": request.method if request.method in METHODS else "OTHER",
+        "route": request.url_rule.rule if request.url_rule is not None else "unmatched",
+    }
+    if status is not None:
+        record["status"] = status
+
+    if count:
+        with counter_lock:
+            security_counts[event] += 1
+            record["event_count"] = security_counts[event]
+            logger.info(json.dumps(record))
+    else:
+        logger.info(json.dumps(record))
