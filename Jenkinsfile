@@ -124,7 +124,13 @@ pipeline {
         stage('IaC - Trivy Configuration') {
             steps {
                 sh '''
+                    set -eu
+                    set -- ./ci/k8s-dast/rejected-pod.yaml ./k8s/tests/rejected-pod.yaml
+                    python3 ci/check_psa_fixtures.py "$@"
+
                     trivy config . \
+                      --skip-files "$1" \
+                      --skip-files "$2" \
                       --format json \
                       --output reports/trivy-iac.json \
                       --exit-code 0
